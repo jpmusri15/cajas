@@ -302,7 +302,9 @@ const Store={
       const base='https://www.gstatic.com/firebasejs/'+FB_VER+'/';
       const [appM,authM,fs]=await Promise.all([import(base+'firebase-app.js'),import(base+'firebase-auth.js'),import(base+'firebase-firestore.js')]);
       const app=appM.initializeApp(cfg);
-      FB.authM=authM; FB.fs=fs; FB.auth=authM.getAuth(app);
+      FB.authM=authM; FB.fs=fs;
+      // Sin el resolver de popups: en iPhone (app de inicio) el iframe de Google falla y da error de red.
+      try{ FB.auth=authM.initializeAuth(app,{persistence:[authM.indexedDBLocalPersistence,authM.browserLocalPersistence]}); }catch(e){ FB.auth=authM.getAuth(app); }
       try{ FB.db=fs.initializeFirestore(app,{localCache:fs.persistentLocalCache({tabManager:fs.persistentMultipleTabManager()})}); }
       catch(e){ FB.db=fs.getFirestore(app); }
       const user=await new Promise(res=>{ const u=authM.onAuthStateChanged(FB.auth,x=>{u();res(x);}); });
@@ -1269,10 +1271,10 @@ function authErr(e){
   if(/email-already-in-use/.test(c)) return 'Esa cuenta ya existe: usá “Entrar”.';
   if(/weak-password/.test(c)) return 'La contraseña tiene que tener al menos 6 caracteres.';
   if(/invalid-email/.test(c)) return 'El email no es válido.';
-  if(/network/.test(c)) return 'Sin conexión a internet.';
+  if(/network/.test(c)) return 'No se pudo conectar con Firebase. Revisá internet y probá de nuevo.';
   if(/too-many-requests/.test(c)) return 'Demasiados intentos. Esperá unos minutos.';
   if(/operation-not-allowed/.test(c)) return 'Falta activar “Correo/contraseña” en Firebase.';
-  return 'No se pudo entrar ('+c+').';
+  return 'No se pudo entrar ('+(c||(e&&e.message)||'error')+').';
 }
 async function doLogin(nuevo){
   const em=($('#lgEmail').value||'').trim(), pw=$('#lgPass').value||'';
