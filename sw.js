@@ -1,5 +1,5 @@
 // Funcionamiento sin conexión: guarda la app en el teléfono.
-const VERSION = 'cajas-v4';
+const VERSION = 'cajas-v5';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './firebase-config.js',
   './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png',
   './vendor/jspdf.umd.min.js', './vendor/jspdf.plugin.autotable.min.js'];
