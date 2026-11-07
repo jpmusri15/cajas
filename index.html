@@ -157,6 +157,7 @@ table.sum .r{text-align:right}
 .hall{padding:8px 0;border-top:1px solid var(--line);font-size:14px}.hall:first-child{border-top:0;padding-top:0}
 .hall.h-grave{color:var(--danger);font-weight:600}.hall.h-rec,.hall.h-gen{font-weight:600}
 .tbar{margin:8px 0}.tbar-l{display:flex;justify-content:space-between;font-size:14px}.tbar-b{height:6px;background:var(--line);border-radius:99px;margin-top:4px;overflow:hidden}.tbar-b i{display:block;height:100%;background:var(--accent)}
+@media (prefers-color-scheme:dark){.gseg button.on.g-grave,.gseg button.on.g-moderada,.gseg button.on.g-leve,.dbox.d-bad{color:#14161a}}
 .ost{font-size:12px;font-weight:700;color:var(--warn);white-space:nowrap}.ost.ok{color:var(--accent)}
 .tcard .tc-h{display:flex;justify-content:space-between;align-items:baseline;font-size:15px}
 .tc-big{font-size:30px;font-weight:750;letter-spacing:-.02em;color:var(--accent);margin-top:4px}
@@ -748,6 +749,7 @@ function renderSheet(){
   else if(sheetKind==='obs') h+=sheetObs();
   else if(sheetKind==='obs-edit') h+=sheetObsEdit();
   else if(sheetKind==='foto') h+=sheetFoto();
+  else if(sheetKind==='archivo') h+=sheetArchivo();
   else if(sheetKind==='suc') h+=sheetSuc();
   else if(sheetKind==='bulk') h+=sheetBulk();
   sh.innerHTML=h; bindSheetInputs(); hydrateFotos(sh);
@@ -1244,14 +1246,33 @@ async function generarPDF(){
 }
 
 /* ---------- archivos (compartir / descargar) ---------- */
-async function saveFile(blob,fname,type){
-  try{
-    const file=new File([blob],fname,{type:type||blob.type});
-    if(navigator.canShare&&navigator.canShare({files:[file]})){ await navigator.share({files:[file],title:fname}); return true; }
-  }catch(e){ if(e&&e.name==='AbortError') return false; }
+function descargarDirecto(blob,fname){
   try{ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fname; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),60000); return true; }
   catch(e){ toast('No se pudo guardar el archivo'); return false; }
 }
+async function saveFile(blob,fname,type){
+  const file=new File([blob],fname,{type:type||blob.type});
+  const puedeCompartir=!!(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]}));
+  if(puedeCompartir){
+    try{ await navigator.share({files:[file],title:fname}); return true; }
+    catch(e){
+      if(e&&e.name==='AbortError') return false;
+      // El iPhone pide que el menú de compartir se abra justo al tocar: mostramos un botón para eso.
+      S.archivo={file,blob,fname,back:sheetKind}; if(sheetKind) goSheet('archivo'); else openSheet('archivo'); return false;
+    }
+  }
+  return descargarDirecto(blob,fname);
+}
+function sheetArchivo(){
+  const a=S.archivo||{};
+  return '<h2>Archivo listo</h2><div class="sub">'+esc(a.fname||'')+'</div><p class="hint">Tocá el botón para guardarlo o mandarlo por WhatsApp o mail.</p>'+
+    '<div class="btns"><button class="btn s" data-act="archivo-cerrar">Cerrar</button><button class="btn p" data-act="archivo-compartir">Compartir</button></div>';
+}
+function compartirArchivo(){
+  const a=S.archivo; if(!a) return;
+  navigator.share({files:[a.file],title:a.fname}).then(()=>volverDeArchivo()).catch(e=>{ if(!(e&&e.name==='AbortError')){ descargarDirecto(a.blob,a.fname); } });
+}
+function volverDeArchivo(){ const b=S.archivo&&S.archivo.back; S.archivo=null; if(b&&b!=='archivo') goSheet(b); else closeSheet(); }
 
 /* ---------- cuenta, copia de seguridad ---------- */
 const COLS=['sucursales','visitas','planes','observaciones','fotos'];
@@ -1308,6 +1329,7 @@ async function exportarCopia(){
   }catch(e){ console.error(e); toast('No se pudo exportar'); }
 }
 async function importarCopia(file){
+  if(Store.mode==='cloud'&&navigator.onLine===false){ toast('Necesitás internet para importar'); return; }
   try{
     const o=JSON.parse(await file.text()); const cs=o&&o.colecciones; if(!cs) throw new Error('formato');
     let n=0; toast('Importando…');
@@ -1353,6 +1375,8 @@ document.addEventListener('click',e=>{
     case 'informe': openSheet('informe'); break;
     case 'empezar': empezarRecorrido(); break;
     case 'login': doLogin(false); break;
+    case 'archivo-compartir': compartirArchivo(); break;
+    case 'archivo-cerrar': volverDeArchivo(); break;
     case 'signup': doLogin(true); break;
     case 'reset-pass': resetPass(); break;
     case 'logout': if(!S.confirmLogout){S.confirmLogout=true;render();setTimeout(()=>{S.confirmLogout=false;render();},3000);break;} FB.authM.signOut(FB.auth).then(()=>location.reload()); break;
