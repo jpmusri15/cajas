@@ -417,6 +417,7 @@
 <div class="toast" id="toast"><span id="tMsg"></span><button id="tBtn"></button></div>
 
 <script src="../firebase-config.js"></script>
+<script src="config.js"></script>
 <script>
 /* ================= Utilidades ================= */
 const $ = s => document.querySelector(s);
@@ -927,6 +928,7 @@ function handleText(t,text){
 let micFails=0;
 function showMicHelp(err){
   const standalone=window.navigator.standalone===true||matchMedia("(display-mode: standalone)").matches;
+  if(USE_CLOUD) $("#hStandalone").textContent="Si el iPhone no te pidió permiso para el micrófono: Ajustes › Apps › Safari › Micrófono › Permitir. Después cerrá y abrí la app.";
   $("#hErr").textContent="Código: "+(err||"desconocido")+" · idioma "+LANGS[langIdx]+(standalone?" · abierta desde el ícono":" · navegador");
   $("#hStandalone").classList.toggle("hidden",!standalone);
   openModal("#mHelp");
@@ -943,6 +945,7 @@ function micBlocked(){
 let quietDiscard=false;
 let session=0, stopTimer=null, engineRec=null, engineStopAt=0, pendingStart=null;
 function startDict(t){
+  if(USE_CLOUD) return cloudStart(t);
   if(!SR||!dict) return;
   if(needsReset){
     if(t!=="main"&&t!=="tema"){ toast("Para seguir dictando acá usá el 🎤 del teclado"); document.getElementById(t).focus(); }
@@ -1000,7 +1003,7 @@ try{ if(sessionStorage.getItem("mem_recover_msg")){ sessionStorage.removeItem("m
    Por eso, después de cada grabación, la app se refresca sola y vuelve al mismo lugar. */
 let needsReset=false, resetting=false;
 function resetSoon(){
-  if(!IS_APPLE) return;
+  if(!IS_APPLE||USE_CLOUD) return;
   needsReset=true;
   if(document.querySelector(".modal.show")) return;      // espera a que se cierre la ventana abierta
   doReset();
@@ -1034,6 +1037,7 @@ function endSession(fromEnd, silent){
   else if(was==="iText" && autoSaveInfo){ autoSaveInfo=false; saveInfo(); }
 }
 function stopAny(save){
+  if(USE_CLOUD){ cloudStop(save, quietDiscard); quietDiscard=false; return; }
   if(!rec) return;
   const r=rec;
   if(!save){ discard=true; autoSaveInfo=false; endSession(false); return; }   // descartar: la app sigue al toque
@@ -1042,7 +1046,116 @@ function stopAny(save){
   // Si el motor no avisa que terminó, guardamos igual lo que se escuchó.
   clearTimeout(stopTimer); stopTimer=setTimeout(()=>{ if(rec===r) endSession(false); },1200);
 }
-function stopTa(){ if(rec&&target&&target!=="main"&&target!=="tema"){ autoSaveInfo=false; endSession(false,true); } }
+function stopTa(){ if(USE_CLOUD){ if(cl&&cl.t!=="main"&&cl.t!=="tema") cloudStop(false,true); return; } if(rec&&target&&target!=="main"&&target!=="tema"){ autoSaveInfo=false; endSession(false,true); } }
+/* ================= Grabación + transcripción en la nube (Cloudflare Whisper) =================
+   Se usa cuando hay TRANSCRIBE_URL. Graba el audio con el micrófono (funciona siempre en iPhone),
+   lo convierte a WAV liviano (16 kHz, mono) y lo manda a transcribir. */
+const USE_CLOUD = !!(window.TRANSCRIBE_URL && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+if(USE_CLOUD) dict={};
+let cl=null;                    // grabación en curso: {t, temaId, stream, recorder, chunks, startAt, stopReq, save, quiet, timer}
+let lastFailed=null;
+function pickMime(){ const c=["audio/mp4","audio/webm;codecs=opus","audio/webm","audio/aac"]; for(const m of c){ try{ if(MediaRecorder.isTypeSupported(m)) return m; }catch(_){} } return ""; }
+function fmtSecs(ms){ const s=Math.floor(ms/1000); return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
+function cloudStart(t){
+  if(cl) cloudStop(false,true);
+  const me={t, temaId:curTema, chunks:[], startAt:0, stopReq:null};
+  cl=me; target=t; current=""; setListening(true);
+  if(t==="main"||t==="tema") liveEl().innerHTML='<span class="partial">Preparando el micrófono…</span>';
+  navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}).then(stream=>{
+    me.stream=stream;
+    if(me.stopReq){ stream.getTracks().forEach(x=>x.stop()); cloudFinish(me); return; }   // soltó antes de que arranque
+    const mime=pickMime();
+    const rcd=mime?new MediaRecorder(stream,{mimeType:mime}):new MediaRecorder(stream);
+    me.recorder=rcd;
+    rcd.ondataavailable=e=>{ if(e.data&&e.data.size) me.chunks.push(e.data); };
+    rcd.onstop=()=>{ stream.getTracks().forEach(x=>x.stop()); cloudFinish(me); };
+    rcd.start(); me.startAt=Date.now();
+    const tick=()=>{ if(cl!==me||!me.recorder) return;
+      const el=(me.t==="tema")?$("#tLive"):$("#live");
+      if(me.t==="main"||me.t==="tema") el.innerHTML='<span class="partial">🎙️ Grabando… hablá ahora · '+fmtSecs(Date.now()-me.startAt)+'</span>';
+      if(Date.now()-me.startAt>180000){ cloudStop(true); toast("Llegaste al máximo de 3 minutos, se guardó"); return; }
+      me.timer=setTimeout(tick,250); };
+    tick();
+  }).catch(err=>{
+    if(cl===me){ cl=null; setListening(false); target=null; }
+    const n=err&&err.name||"";
+    if(n==="NotAllowedError"||n==="SecurityError"){ showMicHelp("permiso-microfono"); }
+    else toast("No se pudo usar el micrófono ("+(n||"error")+")");
+  });
+}
+function cloudStop(save, quiet){
+  const me=cl; if(!me) return;
+  me.save=!!save; me.quiet=!!quiet; me.stopReq=true;
+  clearTimeout(me.timer);
+  cl=null; setListening(false); target=null;
+  $("#live").innerHTML=""; $("#tLive").innerHTML="";
+  if(me.recorder){ try{ me.recorder.state!=="inactive" ? me.recorder.stop() : cloudFinish(me); }catch(_){ cloudFinish(me); } }
+  // si todavía no arrancó, cloudFinish se llama cuando el micrófono responda
+}
+function cloudFinish(me){
+  if(me.done) return; me.done=true;
+  if(me.stream) me.stream.getTracks().forEach(x=>x.stop());
+  if(!me.save){ if(!me.quiet&&(me.t==="main"||me.t==="tema")) toast("Cancelado"); return; }
+  const dur=me.startAt?Date.now()-me.startAt:0;
+  if(!me.chunks.length||dur<600){ toast("Mantené apretado el micrófono mientras hablás"); return; }
+  const blob=new Blob(me.chunks,{type:me.chunks[0].type||"audio/mp4"});
+  transcribeAndDeliver(blob, me.t, me.temaId);
+}
+let transcribing=0;
+function showTranscribing(){ if(transcribing>0){ $("#tMsg").textContent="✍️ Pasando a texto…"; $("#tBtn").style.display="none"; $("#toast").classList.add("show"); clearTimeout(tTimer); } }
+async function transcribeAndDeliver(blob, t, temaId){
+  transcribing++; showTranscribing();
+  try{
+    const wav64=await toWav16kBase64(blob);
+    const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),45000);
+    const res=await fetch(window.TRANSCRIBE_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({audio:wav64}),signal:ctrl.signal});
+    clearTimeout(to);
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error||("error "+res.status));
+    transcribing--; $("#toast").classList.remove("show");
+    const text=(data.text||"").trim();
+    if(!text){ toast("No se entendió el audio, probá de nuevo"); return; }
+    lastFailed=null;
+    deliverText(t,text,temaId);
+  }catch(e){
+    transcribing--; console.error(e);
+    lastFailed={blob,t,temaId};
+    const offline=!navigator.onLine||e.name==="AbortError"||/fetch|network/i.test(String(e.message));
+    toast(offline?"📶 Sin conexión: no se pudo pasar a texto":"⚠️ No se pudo pasar a texto","Reintentar",()=>{ const f=lastFailed; if(f) transcribeAndDeliver(f.blob,f.t,f.temaId); });
+  }
+}
+function deliverText(t,text,temaId){
+  if(t==="main") { interpretMain(text); return; }
+  if(t==="tema"){
+    const tm=byId(temaId)||byId(curTema);
+    if(!tm){ newNote(text); toast("✅ Anotado"); return; }
+    const {tipo,txt}=kindFromText(text,itemKind); if(!txt.trim()) return;
+    addItem(tm,txt,tipo); toast(tipo==="paso"?"☑️ Paso agregado":"📝 Dato agregado"); return;
+  }
+  const ta=document.getElementById(t); if(!ta) return;
+  ta.value=(ta.value?ta.value.replace(/\s*$/," "):"")+text;
+  if(t==="iText" && $("#mInfo").classList.contains("show")) saveInfo();
+}
+// Convierte cualquier audio grabado a WAV 16 kHz mono y lo devuelve en base64.
+async function toWav16kBase64(blob){
+  const ab=await blob.arrayBuffer();
+  const AC=window.AudioContext||window.webkitAudioContext; const ctx=new AC();
+  const buf=await new Promise((res,rej)=>{ const p=ctx.decodeAudioData(ab,res,rej); if(p&&p.then) p.then(res,rej); });
+  try{ ctx.close(); }catch(_){}
+  const rate=16000, len=Math.max(1,Math.ceil(buf.duration*rate));
+  const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext; const off=new OAC(1,len,rate);
+  const src=off.createBufferSource(); src.buffer=buf; src.connect(off.destination); src.start(0);
+  const out=await new Promise((res,rej)=>{ off.oncomplete=e=>res(e.renderedBuffer); const p=off.startRendering(); if(p&&p.then) p.then(res,rej); });
+  const pcm=out.getChannelData(0);
+  const bytes=new ArrayBuffer(44+pcm.length*2), v=new DataView(bytes);
+  const w=(o,str)=>{ for(let i=0;i<str.length;i++) v.setUint8(o+i,str.charCodeAt(i)); };
+  w(0,"RIFF"); v.setUint32(4,36+pcm.length*2,true); w(8,"WAVE"); w(12,"fmt "); v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,rate,true); v.setUint32(28,rate*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true); w(36,"data"); v.setUint32(40,pcm.length*2,true);
+  for(let i=0,o=44;i<pcm.length;i++,o+=2){ const x=Math.max(-1,Math.min(1,pcm[i])); v.setInt16(o,x<0?x*0x8000:x*0x7FFF,true); }
+  const u8=new Uint8Array(bytes); let bin=""; for(let i=0;i<u8.length;i+=0x8000) bin+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));
+  return btoa(bin);
+}
+
 /* ---- Mantener apretado para grabar (como WhatsApp) ---- */
 function fallbackFor(t){ if(t==="main") $("#bWrite").click(); else if(t==="tema") $("#tInput").focus(); else document.getElementById(t).focus(); }
 function holdToTalk(el, t){
@@ -1088,12 +1201,13 @@ paintIdle();
    para que el micrófono arranque siempre listo. */
 let hiddenAt=0;
 document.addEventListener("visibilitychange",()=>{
-  if(document.visibilityState==="hidden"){ hiddenAt=Date.now(); if(rec) endSession(false,true); return; }
+  if(document.visibilityState==="hidden"){ hiddenAt=Date.now(); if(USE_CLOUD){ if(cl) cloudStop(false,true); } else if(rec) endSession(false,true); return; }
+  if(USE_CLOUD) return;
   if(!IS_APPLE || !hiddenAt || Date.now()-hiddenAt<1500) return;
   if(document.querySelector(".modal.show")){ needsReset=true; return; }   // hay algo a medio escribir: espera a que se cierre
   doReset();
 });
-window.addEventListener("pageshow",e=>{ if(e.persisted && IS_APPLE) location.reload(); });   // volvió desde la caché del navegador
+window.addEventListener("pageshow",e=>{ if(e.persisted && IS_APPLE && !USE_CLOUD) location.reload(); });   // volvió desde la caché del navegador
 
 /* ================= Inicio ================= */
 setTab(restore&&restore.tab?restore.tab:(tab==="temas"?"temas":"notas"));

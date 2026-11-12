@@ -1,6 +1,6 @@
 // Funcionamiento sin conexión: guarda la app en el teléfono.
-const VERSION = 'memoria-v6';
-const SHELL = ['./', './index.html', './manifest.webmanifest', '../firebase-config.js',
+const VERSION = 'memoria-v7';
+const SHELL = ['./', './index.html', './manifest.webmanifest', '../firebase-config.js', './config.js',
   './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -12,7 +12,7 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  const isPage = req.mode === 'navigate' || url.pathname.endsWith('/index.html') || url.pathname.endsWith('/firebase-config.js');
+  const isPage = req.mode === 'navigate' || url.pathname.endsWith('/index.html') || url.pathname.endsWith('/firebase-config.js') || url.pathname.endsWith('/config.js');
   const isFirebaseLib = url.hostname === 'www.gstatic.com' && url.pathname.startsWith('/firebasejs/');
   if (url.origin !== location.origin && !isFirebaseLib) return; // Firestore y Auth van directo a la red
   if (isPage) {
