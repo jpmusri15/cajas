@@ -917,19 +917,27 @@ function micBlocked(){
   dict=null; document.querySelectorAll(".ta-mic").forEach(b=>b.style.display="none"); paintIdle();
   toast("No se pudo usar el micrófono acá: usá el 🎤 del teclado");
 }
-/* Cada grabación es una "sesión". La app la cierra por su cuenta (no espera al iPhone),
-   así nunca queda trabada; los avisos tardíos de una sesión vieja se ignoran. */
-let session=0, stopTimer=null;
+/* Cada grabación es una "sesión". En iPhone el motor de dictado se cuelga si se lo corta
+   de golpe (abort) o si se arranca otro antes de que el anterior termine. Por eso:
+   - nunca se usa abort(): siempre stop(), y se espera a que el motor avise que terminó;
+   - si se toca el micrófono mientras el motor todavía está cerrando, se arranca apenas termina;
+   - si el motor no responde, la app se reinicia sola (es lo mismo que cerrarla y abrirla). */
+let session=0, stopTimer=null, engineRec=null, engineStopAt=0, pendingStart=null;
 function startDict(t){
   if(!SR||!dict) return;
-  if(rec) endSession(false,true);                 // por si quedó algo colgado
+  if(rec) endSession(false,true);
+  if(engineRec){                                        // el motor anterior todavía está cerrando
+    if(Date.now()-engineStopAt<2500){ pendingStart=t; preparing(t); return; }
+    recoverMic(t); return;                              // no terminó nunca: está colgado
+  }
   const my=++session;
   target=t; current=""; discard=false; autoSaveInfo=(t==="iText"); lastErr="";
   const isTa = t!=="main"&&t!=="tema";
   if(isTa) taBase=document.getElementById(t).value;
-  const r=new SR(); rec=r;
+  const r=new SR(); rec=r; engineRec=r; engineStopAt=0;
   r.lang=LANGS[langIdx]; r.continuous=!IS_APPLE; r.interimResults=true; r.maxAlternatives=1;
-  const ready=()=>{ if(my!==session) return; clearTimeout(watchdog); if(target==="main"||target==="tema"){ if(!current) liveEl().innerHTML='<span class="partial">🎙️ Hablá ahora…</span>'; } };
+  let started=false;
+  const ready=()=>{ started=true; if(my!==session) return; clearTimeout(watchdog); if(target==="main"||target==="tema"){ if(!current) liveEl().innerHTML='<span class="partial">🎙️ Hablá ahora…</span>'; } };
   r.onstart=ready; r.onaudiostart=ready;
   r.onresult=e=>{
     if(my!==session) return;
@@ -939,24 +947,43 @@ function startDict(t){
     else if(target){ document.getElementById(target).value=(taBase?taBase.replace(/\s*$/," "):"")+current; }
   };
   r.onerror=e=>{ if(my!==session) return; lastErr=e.error||""; };
-  r.onend=()=>{ if(my!==session) return; endSession(true); };
-  // Si en 6 segundos el micrófono no arrancó, se cierra y se muestra la ayuda.
-  clearTimeout(watchdog); watchdog=setTimeout(()=>{ if(my===session&&rec){ lastErr="timeout"; endSession(false); } },6000);
-  try{ r.start(); }catch(_){ rec=null; target=null; session++; toast("No se pudo activar el micrófono, probá de nuevo"); return; }
+  r.onend=()=>{
+    if(engineRec===r) engineRec=null;                   // el motor quedó libre
+    if(my===session) endSession(true);
+    if(pendingStart){ const nt=pendingStart; pendingStart=null; clearTimeout(prepTimer); startDict(nt); }
+  };
+  // Si en 4 segundos el micrófono no arrancó, el motor está colgado.
+  clearTimeout(watchdog); watchdog=setTimeout(()=>{ if(my===session&&!started){ endSession(false,true); recoverMic(t); } },4000);
+  try{ r.start(); }catch(_){ engineRec=null; rec=null; target=null; session++; recoverMic(t); return; }
   setListening(true); if(!isTa) paintLive();
 }
-// Cierra la sesión actual. fromEnd: el navegador ya la terminó. silent: no hacer nada con el texto.
+let prepTimer=null;
+function preparing(t){
+  if(t==="main"||t==="tema"){ cardEl(t).classList.add("listening"); (t==="tema"?$("#tLive"):$("#live")).innerHTML='<span class="partial">Preparando el micrófono…</span>'; }
+  clearTimeout(prepTimer);
+  prepTimer=setTimeout(()=>{ if(pendingStart){ const nt=pendingStart; pendingStart=null; cardEl(nt).classList.remove("listening"); recoverMic(nt); } },2600);
+}
+// Reinicia la app para destrabar el dictado del iPhone (solo si no se hizo hace poco).
+function recoverMic(t){
+  const last=+(sessionStorage.getItem("mem_recovered")||0);
+  if(!IS_APPLE || Date.now()-last<60000 || (t!=="main"&&t!=="tema")){ $("#rec").classList.remove("listening"); $("#tRec").classList.remove("listening"); paintIdle(); showMicHelp("timeout"); return; }
+  try{ sessionStorage.setItem("mem_recovered",String(Date.now())); sessionStorage.setItem("mem_recover_msg","1"); }catch(_){}
+  toast("Reiniciando el micrófono…");
+  setTimeout(()=>location.reload(),350);
+}
+try{ if(sessionStorage.getItem("mem_recover_msg")){ sessionStorage.removeItem("mem_recover_msg"); setTimeout(()=>toast("🎤 Micrófono listo, tocá para grabar"),600); } }catch(_){}
+// Cierra la sesión actual. fromEnd: el motor ya terminó. silent: no hacer nada con el texto.
 function endSession(fromEnd, silent){
   session++; clearTimeout(watchdog); clearTimeout(stopTimer);
   const r=rec, was=target, text=current.trim(), err=lastErr, wasDiscard=discard;
   rec=null;
-  if(r && !fromEnd){ try{ r.onresult=r.onerror=r.onend=r.onstart=r.onaudiostart=null; r.abort(); }catch(_){} }
+  if(r && !fromEnd && engineRec===r){ if(!engineStopAt) engineStopAt=Date.now(); try{ r.stop(); }catch(_){} }
   setListening(false); target=null; current=""; discard=false;
   $("#live").innerHTML=""; $("#tLive").innerHTML="";
   if(silent) return;
   if(wasDiscard){ if(was==="main"||was==="tema") toast("Descartado"); return; }
   if(err==="language-not-supported" && langIdx<LANGS.length-1){ langIdx++; lsSet("mem_lang",langIdx); toast("Ajusté el idioma del dictado, tocá el micrófono de nuevo"); return; }
-  if(err==="not-allowed"||err==="service-not-allowed"||err==="audio-capture"||err==="timeout"){ showMicHelp(err); return; }
+  if(err==="not-allowed"||err==="service-not-allowed"||err==="audio-capture"){ showMicHelp(err); return; }
   if(was==="main"||was==="tema"){
     if(text){ handleText(was,text); micFails=0; }
     else { micFails++; if(micFails>=2||(err&&err!=="no-speech"&&err!=="aborted")) showMicHelp(err||"sin-texto"); else toast("No te escuché. Esperá el “Hablá ahora” y probá de nuevo"); }
@@ -965,10 +992,11 @@ function endSession(fromEnd, silent){
 }
 function stopAny(save){
   if(!rec) return;
-  if(!save){ discard=true; autoSaveInfo=false; endSession(false); return; }   // descartar: corta ya
   const r=rec;
+  if(!save){ discard=true; autoSaveInfo=false; endSession(false); return; }   // descartar: la app sigue al toque
+  if(!engineStopAt) engineStopAt=Date.now();
   try{ r.stop(); }catch(_){}
-  // Si el iPhone no avisa que terminó, cerramos igual con lo que se escuchó.
+  // Si el motor no avisa que terminó, guardamos igual lo que se escuchó.
   clearTimeout(stopTimer); stopTimer=setTimeout(()=>{ if(rec===r) endSession(false); },1200);
 }
 function stopTa(){ if(rec&&target&&target!=="main"&&target!=="tema"){ autoSaveInfo=false; endSession(false,true); } }
