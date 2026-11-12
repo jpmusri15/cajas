@@ -852,7 +852,7 @@ function saveInfo(){
   const cur=byId(infoFor.id)||infoFor;
   store.save({...cur,info:[...(cur.info||[]),{t,ts:Date.now()}]}); toast("➕ Novedad agregada"); closeAll(); return true;
 }
-$("#iSave").onclick=()=>{ if(listening&&target==="iText"){ autoSaveInfo=true; try{ rec.stop(); }catch(_){} } else saveInfo(); };
+$("#iSave").onclick=()=>{ if(listening&&target==="iText"){ autoSaveInfo=true; stopAny(true); } else saveInfo(); };
 // pasar nota a tema
 function openMove(n){
   moving=n; $("#mvRef").textContent="Nota: "+n.texto.slice(0,100)+(n.texto.length>100?"…":"");
@@ -876,7 +876,7 @@ const IS_APPLE=/iPad|iPhone|iPod/.test(UA)||(navigator.platform==="MacIntel"&&na
 // Apple no reconoce "es-AR": usa español latinoamericano. Si falla, prueba el siguiente.
 const LANGS=IS_APPLE?["es-MX","es-419","es-US","es-ES"]:["es-AR","es-419","es-ES"];
 let langIdx=Math.min(lsGet("mem_lang",0),LANGS.length-1);
-let watchdog=null, heard=false;
+let watchdog=null;
 let dict=SR?{}:null, rec=null, listening=false, target=null, current="", discard=false, autoSaveInfo=false, taBase="", lastErr="";
 const liveEl = () => target==="tema"?$("#tLive"):$("#live");
 const cardEl = t => t==="tema"?$("#tRec"):$("#rec");
@@ -917,62 +917,75 @@ function micBlocked(){
   dict=null; document.querySelectorAll(".ta-mic").forEach(b=>b.style.display="none"); paintIdle();
   toast("No se pudo usar el micrófono acá: usá el 🎤 del teclado");
 }
+/* Cada grabación es una "sesión". La app la cierra por su cuenta (no espera al iPhone),
+   así nunca queda trabada; los avisos tardíos de una sesión vieja se ignoran. */
+let session=0, stopTimer=null;
 function startDict(t){
-  if(!SR||!dict||listening) return;
+  if(!SR||!dict) return;
+  if(rec) endSession(false,true);                 // por si quedó algo colgado
+  const my=++session;
   target=t; current=""; discard=false; autoSaveInfo=(t==="iText"); lastErr="";
   const isTa = t!=="main"&&t!=="tema";
   if(isTa) taBase=document.getElementById(t).value;
-  rec=new SR(); rec.lang=LANGS[langIdx]; rec.continuous=!IS_APPLE; rec.interimResults=true; rec.maxAlternatives=1;
-  heard=false;
-  const ready=()=>{ clearTimeout(watchdog); if(target==="main"||target==="tema"){ if(!current) liveEl().innerHTML='<span class="partial">🎙️ Hablá ahora…</span>'; } };
-  rec.onstart=ready; rec.onaudiostart=ready;
-  rec.onspeechstart=()=>{ heard=true; };
-  // Si en 6 segundos el micrófono no arrancó, se cancela y se muestra la ayuda.
-  clearTimeout(watchdog); watchdog=setTimeout(()=>{ if(rec){ lastErr="timeout"; try{ rec.abort(); }catch(_){ } } },6000);
-  rec.onresult=e=>{
-    let full=""; for(let i=0;i<e.results.length;i++){ const s=e.results[i][0].transcript.trim(); if(s) full+=(full?" ":"")+s; }
+  const r=new SR(); rec=r;
+  r.lang=LANGS[langIdx]; r.continuous=!IS_APPLE; r.interimResults=true; r.maxAlternatives=1;
+  const ready=()=>{ if(my!==session) return; clearTimeout(watchdog); if(target==="main"||target==="tema"){ if(!current) liveEl().innerHTML='<span class="partial">🎙️ Hablá ahora…</span>'; } };
+  r.onstart=ready; r.onaudiostart=ready;
+  r.onresult=e=>{
+    if(my!==session) return;
+    let full=""; for(let i=0;i<e.results.length;i++){ const x=e.results[i][0].transcript.trim(); if(x) full+=(full?" ":"")+x; }
     current=full;
     if(target==="main"||target==="tema") paintLive();
     else if(target){ document.getElementById(target).value=(taBase?taBase.replace(/\s*$/," "):"")+current; }
   };
-  rec.onerror=e=>{ lastErr=e.error||""; };
-  rec.onend=()=>{
-    clearTimeout(watchdog);
-    const was=target, text=current.trim(), err=lastErr;
-    setListening(false); target=null; rec=null; current="";
-    $("#live").innerHTML=""; $("#tLive").innerHTML="";
-    if(err==="language-not-supported" && langIdx<LANGS.length-1){ langIdx++; lsSet("mem_lang",langIdx); toast("Ajusté el idioma del dictado, tocá el micrófono de nuevo"); return; }
-    if(err==="not-allowed"||err==="service-not-allowed"||err==="audio-capture"||err==="timeout"){ showMicHelp(err); return; }
-    if(discard){ discard=false; if(was==="main"||was==="tema") toast("Descartado"); return; }
-    if(was==="main"||was==="tema"){
-      if(text){ handleText(was,text); micFails=0; }
-      else { micFails++; if(micFails>=2||err&&err!=="no-speech") showMicHelp(err||"sin-texto"); else toast("No te escuché. Esperá el “Hablá ahora” y probá de nuevo"); }
-    }
-    else if(was==="iText" && autoSaveInfo){ autoSaveInfo=false; saveInfo(); }
-  };
-  try{ rec.start(); }catch(_){ rec=null; target=null; toast("No se pudo activar el micrófono"); return; }
+  r.onerror=e=>{ if(my!==session) return; lastErr=e.error||""; };
+  r.onend=()=>{ if(my!==session) return; endSession(true); };
+  // Si en 6 segundos el micrófono no arrancó, se cierra y se muestra la ayuda.
+  clearTimeout(watchdog); watchdog=setTimeout(()=>{ if(my===session&&rec){ lastErr="timeout"; endSession(false); } },6000);
+  try{ r.start(); }catch(_){ rec=null; target=null; session++; toast("No se pudo activar el micrófono, probá de nuevo"); return; }
   setListening(true); if(!isTa) paintLive();
+}
+// Cierra la sesión actual. fromEnd: el navegador ya la terminó. silent: no hacer nada con el texto.
+function endSession(fromEnd, silent){
+  session++; clearTimeout(watchdog); clearTimeout(stopTimer);
+  const r=rec, was=target, text=current.trim(), err=lastErr, wasDiscard=discard;
+  rec=null;
+  if(r && !fromEnd){ try{ r.onresult=r.onerror=r.onend=r.onstart=r.onaudiostart=null; r.abort(); }catch(_){} }
+  setListening(false); target=null; current=""; discard=false;
+  $("#live").innerHTML=""; $("#tLive").innerHTML="";
+  if(silent) return;
+  if(wasDiscard){ if(was==="main"||was==="tema") toast("Descartado"); return; }
+  if(err==="language-not-supported" && langIdx<LANGS.length-1){ langIdx++; lsSet("mem_lang",langIdx); toast("Ajusté el idioma del dictado, tocá el micrófono de nuevo"); return; }
+  if(err==="not-allowed"||err==="service-not-allowed"||err==="audio-capture"||err==="timeout"){ showMicHelp(err); return; }
+  if(was==="main"||was==="tema"){
+    if(text){ handleText(was,text); micFails=0; }
+    else { micFails++; if(micFails>=2||(err&&err!=="no-speech"&&err!=="aborted")) showMicHelp(err||"sin-texto"); else toast("No te escuché. Esperá el “Hablá ahora” y probá de nuevo"); }
+  }
+  else if(was==="iText" && autoSaveInfo){ autoSaveInfo=false; saveInfo(); }
 }
 function stopAny(save){
   if(!rec) return;
-  discard=!save; if(!save) autoSaveInfo=false;
-  try{ save?rec.stop():rec.abort(); }catch(_){}
+  if(!save){ discard=true; autoSaveInfo=false; endSession(false); return; }   // descartar: corta ya
+  const r=rec;
+  try{ r.stop(); }catch(_){}
+  // Si el iPhone no avisa que terminó, cerramos igual con lo que se escuchó.
+  clearTimeout(stopTimer); stopTimer=setTimeout(()=>{ if(rec===r) endSession(false); },1200);
 }
-function stopTa(){ if(rec&&target&&target!=="main"&&target!=="tema"){ autoSaveInfo=false; try{ rec.stop(); }catch(_){} } }
+function stopTa(){ if(rec&&target&&target!=="main"&&target!=="tema"){ autoSaveInfo=false; endSession(false,true); } }
 $("#mic").onclick=()=>{
   if(!dict){ $("#bWrite").click(); return; }
-  if(listening){ if(target==="main") stopAny(true); return; }
+  if(listening&&target==="main"){ stopAny(true); return; }
   startDict("main");
 };
 $("#tMic").onclick=()=>{
   if(!dict){ $("#tInput").focus(); return; }
-  if(listening){ if(target==="tema") stopAny(true); return; }
+  if(listening&&target==="tema"){ stopAny(true); return; }
   startDict("tema");
 };
 document.querySelectorAll("[data-stop]").forEach(b=>b.onclick=()=>stopAny(b.dataset.stop==="1"));
 document.querySelectorAll(".ta-mic").forEach(b=>b.onclick=()=>{
   if(!dict) return;
-  if(listening){ if(target===b.dataset.micFor){ try{ rec.stop(); }catch(_){} } return; }
+  if(listening){ if(target===b.dataset.micFor) stopAny(true); return; }
   startDict(b.dataset.micFor); if(b.dataset.micFor!=="iText") autoSaveInfo=false;
 });
 if(!dict) document.querySelectorAll(".ta-mic").forEach(b=>b.style.display="none");
