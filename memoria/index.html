@@ -420,6 +420,9 @@
 <script>
 /* ================= Utilidades ================= */
 const $ = s => document.querySelector(s);
+let restore=null;
+try{ restore=JSON.parse(sessionStorage.getItem("mem_state")||"null"); sessionStorage.removeItem("mem_state"); }catch(_){}
+
 const esc = s => String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const newId = () => Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 function lsGet(k,d){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(e){ return d; } }
@@ -475,6 +478,7 @@ const local = {
 function showBanner(msg){ $("#banner").innerHTML=msg; $("#banner").classList.add("show"); }
 function useLocal(msg){ store=local; docs=lsGet("mem_docs",[]); if(msg) showBanner(esc(msg)); renderAll(); }
 const FB={};
+let lastWrite=Promise.resolve();
 (async()=>{
   const cfg=window.FIREBASE_CONFIG;
   if(!cfg||!cfg.apiKey){ useLocal("Modo local: las notas se guardan solo en este dispositivo."); return; }
@@ -500,8 +504,8 @@ function startCloud(user){
   const fail=e=>{ console.error(e); toast("⚠️ No se pudo guardar, probá de nuevo"); };
   store={
     save(n){ const {id,...body}=n; const i=docs.findIndex(x=>x.id===id); if(i<0) docs.unshift(n); else docs[i]=n; renderAll();
-             return fs.setDoc(fs.doc(col,id),clean(body)).catch(fail); },
-    remove(id){ docs=docs.filter(x=>x.id!==id); renderAll(); return fs.deleteDoc(fs.doc(col,id)).catch(fail); }
+             return (lastWrite=fs.setDoc(fs.doc(col,id),clean(body)).catch(fail)); },
+    remove(id){ docs=docs.filter(x=>x.id!==id); renderAll(); return (lastWrite=fs.deleteDoc(fs.doc(col,id)).catch(fail)); }
   };
   $("#foot").innerHTML=`Sincronizado con ${esc(user.email||"tu cuenta")} · <button id="bLogout">Cerrar sesión</button>`;
   $("#bLogout").onclick=()=>{ if(confirmLogout){ FB.authM.signOut(FB.auth).then(()=>location.reload()); } else { confirmLogout=true; $("#bLogout").textContent="¿Seguro? Tocá otra vez"; setTimeout(()=>{ confirmLogout=false; const b=$("#bLogout"); if(b) b.textContent="Cerrar sesión"; },3000); } };
@@ -600,7 +604,13 @@ function kindFromText(text, def){
 }
 
 /* ================= Render principal ================= */
-function renderAll(){ renderCounts(); if(curTema) renderTema(); else { renderNotas(); renderTemas(); } }
+function renderAll(){
+  if(restore && docs.length){
+    const st=restore; restore=null;
+    if(st.tema && byId(st.tema)) setTimeout(()=>{ openTema(st.tema); window.scrollTo(0,st.y||0); },0);
+    else setTimeout(()=>window.scrollTo(0,st.y||0),0);
+  }
+  renderCounts(); if(curTema) renderTema(); else { renderNotas(); renderTemas(); } }
 function renderCounts(){
   const pend=notes().filter(n=>!n.hecho), open=temas().filter(t=>!t.cerrado);
   $("#cPend").textContent=pend.length; $("#cTemas").textContent=open.length;
@@ -823,7 +833,7 @@ $("#tdDate").onchange=e=>{ tdSel=e.target.value; renderTD(); updTema(x=>{x.vence
 /* ================= Modales ================= */
 let editing=null, infoFor=null, moving=null, mDateSel="";
 function openModal(sel){ $(sel).classList.add("show"); }
-function closeAll(){ stopTa(); document.querySelectorAll(".modal").forEach(m=>m.classList.remove("show")); editing=null; infoFor=null; moving=null; }
+function closeAll(){ stopTa(); document.querySelectorAll(".modal").forEach(m=>m.classList.remove("show")); editing=null; infoFor=null; moving=null; if(needsReset) setTimeout(doReset,0); }
 document.querySelectorAll(".modal").forEach(m=>m.addEventListener("click",e=>{ if(e.target===m||e.target.closest("[data-close]")) closeAll(); }));
 function renderDates(){
   const opts=[["","Sin fecha"],[today(),"Hoy"],[addDays(1),"Mañana"],[nextDow(5),"Viernes"],[addDays(7),"En una semana"]];
@@ -934,6 +944,11 @@ let quietDiscard=false;
 let session=0, stopTimer=null, engineRec=null, engineStopAt=0, pendingStart=null;
 function startDict(t){
   if(!SR||!dict) return;
+  if(needsReset){
+    if(t!=="main"&&t!=="tema"){ toast("Para seguir dictando acá usá el 🎤 del teclado"); document.getElementById(t).focus(); }
+    else doReset();
+    return;
+  }
   if(rec) endSession(false,true);
   if(engineRec){                                        // el motor anterior todavía está cerrando
     if(Date.now()-engineStopAt<2500){ pendingStart=t; preparing(t); return; }
@@ -981,6 +996,24 @@ function recoverMic(t){
   setTimeout(()=>location.reload(),350);
 }
 try{ if(sessionStorage.getItem("mem_recover_msg")){ sessionStorage.removeItem("mem_recover_msg"); setTimeout(()=>toast("🎤 Micrófono listo, tocá para grabar"),600); } }catch(_){}
+/* En iPhone el dictado de Safari escucha una sola vez por apertura de la página.
+   Por eso, después de cada grabación, la app se refresca sola y vuelve al mismo lugar. */
+let needsReset=false, resetting=false;
+function resetSoon(){
+  if(!IS_APPLE) return;
+  needsReset=true;
+  if(document.querySelector(".modal.show")) return;      // espera a que se cierre la ventana abierta
+  doReset();
+}
+function doReset(){
+  if(resetting) return; resetting=true;
+  try{
+    sessionStorage.setItem("mem_state",JSON.stringify({tab, tema:curTema, y:window.scrollY,
+      msg: $("#toast").classList.contains("show") ? $("#tMsg").textContent : ""}));
+  }catch(_){}
+  const wait=new Promise(r=>setTimeout(r,1500));
+  Promise.race([lastWrite,wait]).then(()=>setTimeout(()=>location.reload(),250));
+}
 // Cierra la sesión actual. fromEnd: el motor ya terminó. silent: no hacer nada con el texto.
 function endSession(fromEnd, silent){
   session++; clearTimeout(watchdog); clearTimeout(stopTimer);
@@ -989,6 +1022,7 @@ function endSession(fromEnd, silent){
   if(r && !fromEnd && engineRec===r){ if(!engineStopAt) engineStopAt=Date.now(); try{ r.stop(); }catch(_){} }
   setListening(false); target=null; current=""; discard=false;
   $("#live").innerHTML=""; $("#tLive").innerHTML="";
+  if(r) setTimeout(resetSoon,0);
   if(silent) return;
   if(wasDiscard){ if((was==="main"||was==="tema")&&!quietDiscard) toast("Cancelado"); quietDiscard=false; return; }
   if(err==="language-not-supported" && langIdx<LANGS.length-1){ langIdx++; lsSet("mem_lang",langIdx); toast("Ajusté el idioma del dictado, tocá el micrófono de nuevo"); return; }
@@ -1050,8 +1084,20 @@ if(!dict) document.querySelectorAll(".ta-mic").forEach(b=>b.style.display="none"
 $("#hType").onclick=()=>{ closeAll(); if(curTema) $("#tInput").focus(); else $("#bWrite").click(); };
 paintIdle();
 
+/* Al volver de segundo plano o de la pantalla bloqueada, refrescar la app en iPhone
+   para que el micrófono arranque siempre listo. */
+let hiddenAt=0;
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="hidden"){ hiddenAt=Date.now(); if(rec) endSession(false,true); return; }
+  if(!IS_APPLE || !hiddenAt || Date.now()-hiddenAt<1500) return;
+  if(document.querySelector(".modal.show")){ needsReset=true; return; }   // hay algo a medio escribir: espera a que se cierre
+  doReset();
+});
+window.addEventListener("pageshow",e=>{ if(e.persisted && IS_APPLE) location.reload(); });   // volvió desde la caché del navegador
+
 /* ================= Inicio ================= */
-setTab(tab==="temas"?"temas":"notas");
+setTab(restore&&restore.tab?restore.tab:(tab==="temas"?"temas":"notas"));
+{ const st=restore; if(st&&st.msg) setTimeout(()=>toast(st.msg),400); }
 if("serviceWorker" in navigator){ window.addEventListener("load",()=>{ navigator.serviceWorker.register("sw.js").catch(()=>{}); }); }
 </script>
 </body>
