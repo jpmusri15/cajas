@@ -190,6 +190,13 @@
   .login .lnk{display:block;margin:12px auto 0;color:var(--violet);font-weight:700;font-size:14px}
   .foot{text-align:center;color:var(--muted);font-size:12px;margin:26px 0 0}
   .foot button{color:var(--muted);text-decoration:underline;font-size:12px}
+
+  .mic,.ta-mic{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:none}
+  .rec-card .live-actions{display:none!important}
+  .listening .mic{transform:scale(1.08)}
+  .listening .mic svg{display:block!important}
+  .listening .mic .stop{display:none!important}
+  .cancel-hint{color:var(--red);font-weight:700}
 </style>
 </head>
 <body>
@@ -845,7 +852,8 @@ $("#ntName").onkeydown=e=>{ if(e.key==="Enter") $("#ntSave").click(); };
 function openInfo(n){
   infoFor=n; $("#iText").value=""; $("#iRef").textContent="Sobre: "+n.texto.slice(0,100)+(n.texto.length>100?"…":"");
   openModal("#mInfo");
-  if(dict) startDict("iText"); else $("#iText").focus();
+  $("#iText").placeholder=dict?"Mantené apretado 🎤 y contá la novedad…":"Contá la novedad…";
+  if(!dict) $("#iText").focus();
 }
 function saveInfo(){
   const t=$("#iText").value.trim(); if(!t||!infoFor||!store) return false;
@@ -882,17 +890,17 @@ const liveEl = () => target==="tema"?$("#tLive"):$("#live");
 const cardEl = t => t==="tema"?$("#tRec"):$("#rec");
 function paintLive(){ liveEl().innerHTML= current?esc(current):'<span class="partial">Te escucho…</span>'; }
 function paintIdle(){
-  if(tab==="temas"){ $("#micHint").textContent="Tocá y decí el nombre del tema"; $("#micSub").innerHTML=dict?'Ej: "Cotización de precios"':"Tocá el micrófono y usá el 🎤 del teclado"; }
-  else { $("#micHint").textContent="Tocá y contalo"; $("#micSub").innerHTML=dict?'Ej: "Martín me pidió el informe <b>para el viernes</b>"<br>o "agregar a cotización de precios: …"':"Tocá el micrófono y usá el 🎤 del teclado"; }
-  $("#tHint").textContent= itemKind==="paso"?"Tocá y dictá un paso a hacer":"Tocá y dictá el dato o novedad";
+  if(tab==="temas"){ $("#micHint").textContent=dict?"Mantené apretado y decí el nombre del tema":"Tocá y escribí el nombre del tema"; $("#micSub").innerHTML=dict?'Ej: "Cotización de precios"':"Tocá el micrófono y usá el 🎤 del teclado"; }
+  else { $("#micHint").textContent=dict?"Mantené apretado y hablá":"Tocá para anotar"; $("#micSub").innerHTML=dict?'Ej: "Martín me pidió el informe <b>para el viernes</b>"<br>o "agregar a cotización de precios: …"':"Tocá el micrófono y usá el 🎤 del teclado"; }
+  $("#tHint").textContent= dict?(itemKind==="paso"?"Mantené apretado y dictá un paso":"Mantené apretado y dictá el dato"):(itemKind==="paso"?"Escribí un paso a hacer":"Escribí el dato o novedad");
   $("#tSub").innerHTML= dict?'Podés empezar con “paso…” o “dato…” para elegir el tipo':"Usá el 🎤 del teclado en el campo de abajo";
 }
 function setListening(on){
   listening=on;
   if(target==="main"||target==="tema"){
     cardEl(target).classList.toggle("listening",on);
-    if(target==="main") $("#micHint").textContent=on?"Escuchando… tocá para guardar":"";
-    else $("#tHint").textContent=on?"Escuchando… tocá para agregar":"";
+    const h=on?'Soltá para guardar · <span class="cancel-hint">← deslizá para cancelar</span>':"";
+    if(target==="main") $("#micHint").innerHTML=h; else $("#tHint").innerHTML=h;
     if(!on) paintIdle();
   } else if(target){
     document.querySelectorAll(".ta-mic").forEach(b=>b.classList.toggle("rec",on&&b.dataset.micFor===target));
@@ -922,6 +930,7 @@ function micBlocked(){
    - nunca se usa abort(): siempre stop(), y se espera a que el motor avise que terminó;
    - si se toca el micrófono mientras el motor todavía está cerrando, se arranca apenas termina;
    - si el motor no responde, la app se reinicia sola (es lo mismo que cerrarla y abrirla). */
+let quietDiscard=false;
 let session=0, stopTimer=null, engineRec=null, engineStopAt=0, pendingStart=null;
 function startDict(t){
   if(!SR||!dict) return;
@@ -935,7 +944,7 @@ function startDict(t){
   const isTa = t!=="main"&&t!=="tema";
   if(isTa) taBase=document.getElementById(t).value;
   const r=new SR(); rec=r; engineRec=r; engineStopAt=0;
-  r.lang=LANGS[langIdx]; r.continuous=!IS_APPLE; r.interimResults=true; r.maxAlternatives=1;
+  r.lang=LANGS[langIdx]; r.continuous=true; r.interimResults=true; r.maxAlternatives=1;
   let started=false;
   const ready=()=>{ started=true; if(my!==session) return; clearTimeout(watchdog); if(target==="main"||target==="tema"){ if(!current) liveEl().innerHTML='<span class="partial">🎙️ Hablá ahora…</span>'; } };
   r.onstart=ready; r.onaudiostart=ready;
@@ -981,7 +990,7 @@ function endSession(fromEnd, silent){
   setListening(false); target=null; current=""; discard=false;
   $("#live").innerHTML=""; $("#tLive").innerHTML="";
   if(silent) return;
-  if(wasDiscard){ if(was==="main"||was==="tema") toast("Descartado"); return; }
+  if(wasDiscard){ if((was==="main"||was==="tema")&&!quietDiscard) toast("Cancelado"); quietDiscard=false; return; }
   if(err==="language-not-supported" && langIdx<LANGS.length-1){ langIdx++; lsSet("mem_lang",langIdx); toast("Ajusté el idioma del dictado, tocá el micrófono de nuevo"); return; }
   if(err==="not-allowed"||err==="service-not-allowed"||err==="audio-capture"){ showMicHelp(err); return; }
   if(was==="main"||was==="tema"){
@@ -1000,22 +1009,43 @@ function stopAny(save){
   clearTimeout(stopTimer); stopTimer=setTimeout(()=>{ if(rec===r) endSession(false); },1200);
 }
 function stopTa(){ if(rec&&target&&target!=="main"&&target!=="tema"){ autoSaveInfo=false; endSession(false,true); } }
-$("#mic").onclick=()=>{
-  if(!dict){ $("#bWrite").click(); return; }
-  if(listening&&target==="main"){ stopAny(true); return; }
-  startDict("main");
-};
-$("#tMic").onclick=()=>{
-  if(!dict){ $("#tInput").focus(); return; }
-  if(listening&&target==="tema"){ stopAny(true); return; }
-  startDict("tema");
-};
-document.querySelectorAll("[data-stop]").forEach(b=>b.onclick=()=>stopAny(b.dataset.stop==="1"));
-document.querySelectorAll(".ta-mic").forEach(b=>b.onclick=()=>{
-  if(!dict) return;
-  if(listening){ if(target===b.dataset.micFor) stopAny(true); return; }
-  startDict(b.dataset.micFor); if(b.dataset.micFor!=="iText") autoSaveInfo=false;
-});
+/* ---- Mantener apretado para grabar (como WhatsApp) ---- */
+function fallbackFor(t){ if(t==="main") $("#bWrite").click(); else if(t==="tema") $("#tInput").focus(); else document.getElementById(t).focus(); }
+function holdToTalk(el, t){
+  let holding=false, downAt=0, startX=0;
+  const down=x=>{
+    if(holding) return; holding=true; downAt=Date.now(); startX=x;
+    startDict(t);
+  };
+  const move=x=>{
+    if(!holding) return;
+    if(x-startX<-70){ holding=false; pendingCancel(t); stopAny(false); }      // deslizó a la izquierda: cancelar
+  };
+  const up=()=>{
+    if(!holding) return; holding=false;
+    if(pendingStart===t){ pendingCancel(t); return; }                           // soltó antes de que arranque
+    if(Date.now()-downAt<450){ quietDiscard=true; stopAny(false); toast("Mantené apretado el micrófono mientras hablás"); return; }
+    stopAny(true);
+  };
+  el.addEventListener("touchstart",e=>{ if(!dict) return; e.preventDefault(); down(e.touches[0].clientX); },{passive:false});
+  el.addEventListener("touchmove",e=>{ if(holding) move(e.touches[0].clientX); },{passive:true});
+  el.addEventListener("touchend",e=>{ if(!dict) return; e.preventDefault(); up(); },{passive:false});
+  el.addEventListener("touchcancel",()=>up());
+  el.addEventListener("mousedown",e=>{
+    if(!dict||e.button!==0) return; e.preventDefault(); down(e.clientX);
+    const mm=ev=>move(ev.clientX), mu=()=>{ window.removeEventListener("mousemove",mm); window.removeEventListener("mouseup",mu); up(); };
+    window.addEventListener("mousemove",mm); window.addEventListener("mouseup",mu);
+  });
+  el.addEventListener("contextmenu",e=>e.preventDefault());
+  el.onclick=()=>{ if(!dict) fallbackFor(t); };                                  // sin dictado: escribir
+}
+function pendingCancel(t){
+  if(pendingStart===t){ pendingStart=null; clearTimeout(prepTimer); }
+  if(t==="main"||t==="tema"){ cardEl(t).classList.remove("listening"); (t==="tema"?$("#tLive"):$("#live")).innerHTML=""; paintIdle(); }
+}
+holdToTalk($("#mic"),"main");
+holdToTalk($("#tMic"),"tema");
+document.querySelectorAll(".ta-mic").forEach(b=>holdToTalk(b,b.dataset.micFor));
 if(!dict) document.querySelectorAll(".ta-mic").forEach(b=>b.style.display="none");
 $("#hType").onclick=()=>{ closeAll(); if(curTema) $("#tInput").focus(); else $("#bWrite").click(); };
 paintIdle();
