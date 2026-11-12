@@ -375,6 +375,25 @@
 </div>
 
 
+
+<!-- Modal: ayuda del micrófono -->
+<div class="modal" id="mHelp">
+  <div class="sheet">
+    <h3>🎤 El micrófono no está escuchando</h3>
+    <div class="hint">Revisá estas tres cosas en el iPhone:</div>
+    <ol style="margin:0 0 6px;padding-left:20px;line-height:1.5">
+      <li><b>Dictado activado:</b> Ajustes › General › Teclado › <b>Activar dictado</b> (prendido).</li>
+      <li><b>Permiso del micrófono para Safari:</b> Ajustes › Apps › Safari › <b>Micrófono</b> › Preguntar o Permitir.</li>
+      <li><b>Siri y dictado en español:</b> Ajustes › General › Teclado › <b>Idiomas de dictado</b>: que esté Español.</li>
+    </ol>
+    <div class="hint" id="hStandalone" style="margin-top:8px">⚠️ La abriste desde el ícono de inicio: en algunos iPhone Apple no deja dictar ahí. Probá abriendo el mismo link en Safari.</div>
+    <div class="hint" id="hErr" style="font-size:12px"></div>
+    <div class="row">
+      <button class="btn btn-ghost" id="hType">Escribir esta vez</button>
+      <button class="btn btn-main" data-close>Entendido</button>
+    </div>
+  </div>
+</div>
 <!-- Entrada (Firebase) -->
 <div class="login" id="login">
   <div class="box">
@@ -852,6 +871,12 @@ $("#mvList").onclick=e=>{ const b=e.target.closest("[data-mv]"); if(!b||!moving)
 /* ================= Dictado (reconocimiento de voz del navegador) =================
    target: "main" (micrófono principal), "tema" (dentro de un tema) o el id de un textarea */
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+const UA=navigator.userAgent;
+const IS_APPLE=/iPad|iPhone|iPod/.test(UA)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1)||(/Safari/.test(UA)&&!/Chrome|CriOS|Chromium|Edg|Android|Firefox|FxiOS/.test(UA));
+// Apple no reconoce "es-AR": usa español latinoamericano. Si falla, prueba el siguiente.
+const LANGS=IS_APPLE?["es-MX","es-419","es-US","es-ES"]:["es-AR","es-419","es-ES"];
+let langIdx=Math.min(lsGet("mem_lang",0),LANGS.length-1);
+let watchdog=null, heard=false;
 let dict=SR?{}:null, rec=null, listening=false, target=null, current="", discard=false, autoSaveInfo=false, taBase="", lastErr="";
 const liveEl = () => target==="tema"?$("#tLive"):$("#live");
 const cardEl = t => t==="tema"?$("#tRec"):$("#rec");
@@ -881,6 +906,13 @@ function handleText(t,text){
     addItem(tm,txt,tipo); toast(tipo==="paso"?"☑️ Paso agregado":"📝 Dato agregado");
   } else interpretMain(text);
 }
+let micFails=0;
+function showMicHelp(err){
+  const standalone=window.navigator.standalone===true||matchMedia("(display-mode: standalone)").matches;
+  $("#hErr").textContent="Código: "+(err||"desconocido")+" · idioma "+LANGS[langIdx]+(standalone?" · abierta desde el ícono":" · navegador");
+  $("#hStandalone").classList.toggle("hidden",!standalone);
+  openModal("#mHelp");
+}
 function micBlocked(){
   dict=null; document.querySelectorAll(".ta-mic").forEach(b=>b.style.display="none"); paintIdle();
   toast("No se pudo usar el micrófono acá: usá el 🎤 del teclado");
@@ -890,7 +922,13 @@ function startDict(t){
   target=t; current=""; discard=false; autoSaveInfo=(t==="iText"); lastErr="";
   const isTa = t!=="main"&&t!=="tema";
   if(isTa) taBase=document.getElementById(t).value;
-  rec=new SR(); rec.lang="es-AR"; rec.continuous=true; rec.interimResults=true;
+  rec=new SR(); rec.lang=LANGS[langIdx]; rec.continuous=!IS_APPLE; rec.interimResults=true; rec.maxAlternatives=1;
+  heard=false;
+  const ready=()=>{ clearTimeout(watchdog); if(target==="main"||target==="tema"){ if(!current) liveEl().innerHTML='<span class="partial">🎙️ Hablá ahora…</span>'; } };
+  rec.onstart=ready; rec.onaudiostart=ready;
+  rec.onspeechstart=()=>{ heard=true; };
+  // Si en 6 segundos el micrófono no arrancó, se cancela y se muestra la ayuda.
+  clearTimeout(watchdog); watchdog=setTimeout(()=>{ if(rec){ lastErr="timeout"; try{ rec.abort(); }catch(_){ } } },6000);
   rec.onresult=e=>{
     let full=""; for(let i=0;i<e.results.length;i++){ const s=e.results[i][0].transcript.trim(); if(s) full+=(full?" ":"")+s; }
     current=full;
@@ -899,12 +937,17 @@ function startDict(t){
   };
   rec.onerror=e=>{ lastErr=e.error||""; };
   rec.onend=()=>{
+    clearTimeout(watchdog);
     const was=target, text=current.trim(), err=lastErr;
     setListening(false); target=null; rec=null; current="";
     $("#live").innerHTML=""; $("#tLive").innerHTML="";
-    if(err==="not-allowed"||err==="service-not-allowed"||err==="audio-capture"){ micBlocked(); if(was==="tema") $("#tInput").focus(); return; }
+    if(err==="language-not-supported" && langIdx<LANGS.length-1){ langIdx++; lsSet("mem_lang",langIdx); toast("Ajusté el idioma del dictado, tocá el micrófono de nuevo"); return; }
+    if(err==="not-allowed"||err==="service-not-allowed"||err==="audio-capture"||err==="timeout"){ showMicHelp(err); return; }
     if(discard){ discard=false; if(was==="main"||was==="tema") toast("Descartado"); return; }
-    if(was==="main"||was==="tema"){ if(text) handleText(was,text); else toast("No se escuchó nada, probá de nuevo"); }
+    if(was==="main"||was==="tema"){
+      if(text){ handleText(was,text); micFails=0; }
+      else { micFails++; if(micFails>=2||err&&err!=="no-speech") showMicHelp(err||"sin-texto"); else toast("No te escuché. Esperá el “Hablá ahora” y probá de nuevo"); }
+    }
     else if(was==="iText" && autoSaveInfo){ autoSaveInfo=false; saveInfo(); }
   };
   try{ rec.start(); }catch(_){ rec=null; target=null; toast("No se pudo activar el micrófono"); return; }
@@ -933,6 +976,7 @@ document.querySelectorAll(".ta-mic").forEach(b=>b.onclick=()=>{
   startDict(b.dataset.micFor); if(b.dataset.micFor!=="iText") autoSaveInfo=false;
 });
 if(!dict) document.querySelectorAll(".ta-mic").forEach(b=>b.style.display="none");
+$("#hType").onclick=()=>{ closeAll(); if(curTema) $("#tInput").focus(); else $("#bWrite").click(); };
 paintIdle();
 
 /* ================= Inicio ================= */
