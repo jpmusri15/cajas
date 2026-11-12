@@ -19,3 +19,9 @@ service cloud.firestore {
   }
 }
 ```
+
+## Mi ayuda memoria (`/memoria`)
+
+Segunda app en el mismo sitio: notas del día y temas, cargados por voz.
+Se abre en https://jpmusri15.github.io/cajas/memoria/ y usa el mismo Firebase y la misma cuenta
+(colección `memoria` en Firestore; las reglas de arriba ya la cubren).
