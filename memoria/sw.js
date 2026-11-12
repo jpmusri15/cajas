@@ -1,5 +1,5 @@
 // Funcionamiento sin conexión: guarda la app en el teléfono.
-const VERSION = 'memoria-v7';
+const VERSION = 'memoria-v8';
 const SHELL = ['./', './index.html', './manifest.webmanifest', '../firebase-config.js', './config.js',
   './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png'];
 self.addEventListener('install', e => {

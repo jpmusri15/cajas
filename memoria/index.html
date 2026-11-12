@@ -1110,7 +1110,8 @@ async function transcribeAndDeliver(blob, t, temaId){
     const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),45000);
     const res=await fetch(window.TRANSCRIBE_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({audio:wav64}),signal:ctrl.signal});
     clearTimeout(to);
-    const data=await res.json().catch(()=>({}));
+    const raw=await res.text(); let data={};
+    try{ data=JSON.parse(raw); }catch(_){ transcribing--; toast("⚠️ El servicio de Cloudflare no tiene el código de la app (paso 3)"); return; }
     if(!res.ok) throw new Error(data.error||("error "+res.status));
     transcribing--; $("#toast").classList.remove("show");
     const text=(data.text||"").trim();
